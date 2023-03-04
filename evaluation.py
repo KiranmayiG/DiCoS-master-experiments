@@ -150,6 +150,10 @@ def joint_evaluation(start_prediction, end_prediction, gen_prediction, op_predic
             extract_ans = [2] + input_ids[i][si][start_prediction[i][si] - 1:end_prediction[i][si]] + [3]
             extract_ans += [0] * (ans_pad_size - len(extract_ans))
 
+            print("\ninput_ids[i]: ", str(input_ids[i]))
+            print("\ninput_ids[i][si]: ", str(input_ids[i][si]))
+            print("\nextract_ans: ", str(extract_ans))
+
             if isverify:
                 isvalid = (start_prediction[i][si] == 0 and end_prediction[i][si] == 0) or (
                             extract_ans in ans_vocab[si])
@@ -218,11 +222,14 @@ def joint_evaluation(start_prediction, end_prediction, gen_prediction, op_predic
                 if current_state[slot_id] != [] and gold_state[slot_id] != []:
                     sim = match(current_state[slot_id], gold_state[slot_id], tokenizer)
                     if sim > 0.9:
+                        print("\ncurrent_state: ", str(current_state), "\tgold_state: ", str(gold_state), "\tslot_id: ", str(slot_id), "\tsim score(matched): ", str(sim))
                         current_state[slot_id] = gold_state[slot_id]
                         correct_mask.append(1)
                     else:
+                        print("\ncurrent_state: ", str(current_state), "\tgold_state: ", str(gold_state), "\tslot_id: ", str(slot_id), "\tsim score(unmatched): ", str(sim))
                         correct_mask.append(0)
                 else:
+                    print("\ncurrent_state: ", str(current_state), "\tgold_state: ", str(gold_state), "\tslot_id: ", str(slot_id), "\tsim score(empty input): 0")
                     correct_mask.append(0)
             if correct_mask[-1] == 0:
                 if catemask[slot_id]:

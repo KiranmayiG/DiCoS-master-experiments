@@ -253,7 +253,7 @@ def main():
                         help = "Pretrained tokenizer name or path if not the same as model_name")
     parser.add_argument("--cache_dir", default = "", type = str,
                         help = "Where do you want to store the pre-trained models downloaded from s3")
-    parser.add_argument("--do_train", default = True, action = 'store_true',
+    parser.add_argument("--do_train", default = False, action = 'store_true',
                         help = "Whether to run training.")
     parser.add_argument("--evaluate_during_training", action = 'store_true',
                         help = "Rul evaluation during training at each logging step.")
@@ -480,7 +480,8 @@ def main():
 
         model.to(args.device)
         logger.info("Training/evaluation parameters %s", args)
-        if args.do_train:
+        if args.do_train == True:
+            logger.info("Do train entered")
             num_train_steps = int(len(train_dataloader) / args.batch_size * args.n_epochs)
             bert_params_ids = list(map(id, model.albert.parameters()))
             no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
@@ -609,6 +610,7 @@ def main():
                 torch.save(model_to_save.state_dict(), save_path)
 
         else:
+            logger.info("Do train flase entered")
             joint_acc, catejoint_acc, noncatejoint_acc = evaluate(dev_dataloader, model, device, ans_vocab_nd, cate_mask, turn=2, tokenizer=tokenizer, ontology=ontology)
             print("Test Result:\tJointAcc: {:.4f}\tCategorical-JointAcc: {:.4f}\tnon-Categorical-JointAcc: {:.4f}".format(joint_acc, catejoint_acc, noncatejoint_acc))
             logger_trainInfo.warning("Test Result:\tJointAcc: {:.4f}\tCategorical-JointAcc: {:.4f}\tnon-Categorical-JointAcc: {:.4f}".format(joint_acc, catejoint_acc, noncatejoint_acc))
@@ -646,6 +648,7 @@ def evaluate(dev_dataloader, model, device, ans_vocab_nd, cate_mask,turn =2, tok
     gen_id_labels = []
     gold_ans_labels = []
 
+    logger.info("Evaluate entered")
     for step, batch in enumerate(tqdm(dev_dataloader)):
         print("\nstep: ", str(step))
         print("\nbatchsize: ", str(len(batch)))
@@ -658,6 +661,7 @@ def evaluate(dev_dataloader, model, device, ans_vocab_nd, cate_mask,turn =2, tok
 
         if turn == 2:
             print("entered first turn 2")
+            logger.info("entered first turn 2")
             has_ans_predictions += pred_ops.argmax(dim=-1).cpu().detach().numpy().tolist()
             start_ids += start_idx.cpu().detach().numpy().tolist()
             end_ids += end_idx.cpu().detach().numpy().tolist()
@@ -737,6 +741,7 @@ def evaluate(dev_dataloader, model, device, ans_vocab_nd, cate_mask,turn =2, tok
         if (step + 1) % 50 ==0:
             if turn == 2:
                 print("entered turn 2")
+                logger.info("entered turn 2")
                 gen_acc, op_acc, opguess, opgold, opcorrect, gen_correct, gen_guess, cate_slot_correct_b, nocate_slot_correct_b, catecorrect_b, noncatecorrect_b, domain_correct_b, joint_cor, sample_l = joint_evaluation(start_predictions,
                                                                                                   end_predictions,
                                                                                                   gen_predictions,
@@ -795,8 +800,8 @@ def evaluate(dev_dataloader, model, device, ans_vocab_nd, cate_mask,turn =2, tok
     # print(nocate_slot_correct/(samples * n_slot))
     # print(catecorrect/samples)
     # print(noncatecorrect/samples)
-    # for key in domain_joint.keys():
-    #     print("{}, {}".format(key, domain_joint[key]/samples))
+    for key in domain_joint.keys():
+        print("{}, {}".format(key, domain_joint[key]/samples))
     # print(joint_correct/samples)
     print("joint_correct: ",str(joint_correct))
     print("\ncatecorrect:",str(catecorrect))
