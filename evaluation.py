@@ -137,6 +137,7 @@ def joint_evaluation(start_prediction, end_prediction, gen_prediction, op_predic
     nocate_slot_correct = 0.0
     domain_joint = {"hotel": 0, "train": 0, "attraction": 0, "taxi": 0, "restaurant": 0}
     error = 0
+    results_output = []
     for i, op_pred_turn in enumerate(op_prediction):
         op_guess += 1
         if int(sid[i].split('_')[-1]) == 0:
@@ -150,9 +151,9 @@ def joint_evaluation(start_prediction, end_prediction, gen_prediction, op_predic
             extract_ans = [2] + input_ids[i][si][start_prediction[i][si] - 1:end_prediction[i][si]] + [3]
             extract_ans += [0] * (ans_pad_size - len(extract_ans))
 
-            print("\ninput_ids[i]: ", str(input_ids[i]))
-            print("\ninput_ids[i][si]: ", str(input_ids[i][si]))
-            print("\nextract_ans: ", str(extract_ans))
+            # print("\ninput_ids[i]: ", str(input_ids[i]))
+            print("\ninput_ids[i][si]: ", str("".join(tokenizer.convert_ids_to_tokens(input_ids[i][si]))))
+            print("\nextract_ans: ", str("".join(tokenizer.convert_ids_to_tokens(extract_ans))))
 
             if isverify:
                 isvalid = (start_prediction[i][si] == 0 and end_prediction[i][si] == 0) or (
@@ -213,43 +214,63 @@ def joint_evaluation(start_prediction, end_prediction, gen_prediction, op_predic
                 current_state[si] = last_state[si]
 
         correct_mask = []
+        current_result = ""
+        current_result = str("".join(tokenizer.convert_ids_to_tokens(input_ids[i][si])))
+        current_result += "\t"
+        current_result_slot_wise = {"hotel": " \t ", "train": " \t ", "attraction": " \t ", "taxi": " \t ", "restaurant": " \t "}
         for slot_id in range(len(current_state)):
+            # current_result += str(ontology[slot_id]['name'].split("-")[0])+ "\t" + str("".join(tokenizer.convert_ids_to_tokens(gold_state[slot_id]))) + "\t" + str("".join(tokenizer.convert_ids_to_tokens(current_state[slot_id]))) + "\t"
+            current_result_slot_wise[ontology[slot_id]['name'].split("-")[0]] = str("".join(tokenizer.convert_ids_to_tokens(gold_state[slot_id]))) + "\t" + str("".join(tokenizer.convert_ids_to_tokens(current_state[slot_id]))) + "\t" 
+            slot_matched = 0
             if current_state[slot_id] == 3 or (30004 in current_state[slot_id]):
                 current_state[slot_id] = []
             if current_state[slot_id] == gold_state[slot_id]:
                 correct_mask.append(1)
+                slot_matched = 1
             else:
                 if current_state[slot_id] != [] and gold_state[slot_id] != []:
                     sim = match(current_state[slot_id], gold_state[slot_id], tokenizer)
                     if sim > 0.9:
                         print("\ncurrent_state: ", str(current_state), "\tgold_state: ", str(gold_state), "\tslot_id: ", str(slot_id), "\tsim score(matched): ", str(sim))
+
+                        print("\ncurrent_state: ", str("".join(tokenizer.convert_ids_to_tokens(current_state[slot_id]))), "\tgold_state: ", str("".join(tokenizer.convert_ids_to_tokens(gold_state[slot_id]))), "\tslot_id: ", str(slot_id), "\tsim score(matched): ", str(sim))
+                        
                         current_state[slot_id] = gold_state[slot_id]
                         correct_mask.append(1)
+                        slot_matched = 1
                     else:
                         print("\ncurrent_state: ", str(current_state), "\tgold_state: ", str(gold_state), "\tslot_id: ", str(slot_id), "\tsim score(unmatched): ", str(sim))
+
+                        print("\ncurrent_state: ", str("".join(tokenizer.convert_ids_to_tokens(current_state[slot_id]))), "\tgold_state: ", str("".join(tokenizer.convert_ids_to_tokens(gold_state[slot_id]))), "\tslot_id: ", str(slot_id), "\tsim score(unmatched): ", str(sim))
                         correct_mask.append(0)
                 else:
                     print("\ncurrent_state: ", str(current_state), "\tgold_state: ", str(gold_state), "\tslot_id: ", str(slot_id), "\tsim score(empty input): 0")
                     correct_mask.append(0)
+            # current_result += str(slot_matched) + "\t"
+            current_result_slot_wise[ontology[slot_id]['name'].split("-")[0]] += str(slot_matched)
             if correct_mask[-1] == 0:
                 if catemask[slot_id]:
                     iscate_correct = 0
                 else:
                     isnoncate_correct = 0
                 name = ontology[slot_id]['name'].split("-")[0]
-                domain_joint[name] = 0
+                # domain_joint[name] = 0
+                domain_correct[name] = 0
             else:
                 if catemask[slot_id]:
                     cate_slot_correct += 1
                 else:
                     nocate_slot_correct += 1
 
+        for key,value in current_result_slot_wise.items():
+            current_result += key + "\t" + value + "\t"
+        results_output.append(current_result)
         correct = 1 if sum(correct_mask) == len(current_state) else 0
         joint_correct += correct
         catecorrect += iscate_correct
         noncatecorrect += isnoncate_correct
         for k in domain_joint.keys():
-            domain_correct[k] += domain_correct[k]
+            domain_joint[k] += domain_correct[k]
         last_state = current_state
 
     gen_acc = gen_correct / gen_guess if gen_guess != 0 else 0
@@ -269,7 +290,14 @@ def joint_evaluation(start_prediction, end_prediction, gen_prediction, op_predic
     # print(len(op_prediction))
     # print("Update score: operation precision: %.3f, operation_recall : %.3f,operation F1:%.3f" % (
     #     op_prec, op_recall, op_F1))
-    return gen_acc, op_acc, op_update_guess, op_update_gold, op_update_correct, gen_correct, gen_guess, cate_slot_correct, nocate_slot_correct, catecorrect, noncatecorrect, domain_correct, joint_correct, len(
+    # return gen_acc, op_acc, op_update_guess, op_update_gold, op_update_correct, gen_correct, gen_guess, cate_slot_correct, nocate_slot_correct, catecorrect, noncatecorrect, domain_correct, joint_correct, len(
+    #     op_prediction)
+
+    with open("evaluation_results.tsv", "a") as outfile:
+        for result in results_output:
+            outfile.write(result)
+            outfile.write("\n")
+    return gen_acc, op_acc, op_update_guess, op_update_gold, op_update_correct, gen_correct, gen_guess, cate_slot_correct, nocate_slot_correct, catecorrect, noncatecorrect, domain_joint, joint_correct, len(
         op_prediction)
 
 

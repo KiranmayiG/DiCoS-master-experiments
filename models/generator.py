@@ -109,8 +109,11 @@ class Generator(nn.Module):
         _, imor_output = self.gcn(state_output, pooled_output, first_edge_mask, second_edge_mask,
                                     third_edge_mask, fourth_edge_mask)
 
+        #SN-DH
         slot_text = self.slot_gate(sequence_output, state_output, slot_mask)
+        #CT-DH
         history_text = self.history_gate(pooled_output)
+        #IMOR
         imor_gate = F.sigmoid(self.imor_w(imor_output))
 
         slot_attn = F.sigmoid(self.slot_w(slot_text))

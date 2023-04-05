@@ -381,6 +381,8 @@ def prepare_dataset(data_path, tokenizer, slot_meta,
     if op_data_path is not None:
         with open(op_data_path, 'r') as f:
             global_pred_op = json.load(f)
+    else:
+        global_pred_op = None
     datas = []
     dials = json.load(open(data_path))
     # for d in dials:

@@ -34,6 +34,9 @@ from transformers import get_linear_schedule_with_warmup
 from utils.logger import get_logger
 from torchsummary import summary
 
+import optuna
+from optuna.trial import TrialState
+
 import sys
 import csv
 
@@ -45,6 +48,9 @@ logger_trainInfo.info("")
 
 csv.field_size_limit(sys.maxsize)
 logger = logging.getLogger(__name__)
+
+trial_no = 0
+report_path = None
 
 def set_seed(args):
     random.seed(args.seed)
@@ -238,138 +244,8 @@ def mask_ans_vocab(ontology, slot_meta, tokenizer):
     ans_vocab_tensor = torch.from_numpy(ans_vocab)
     return ans_vocab_tensor, ans_vocab, cate_mask
 
-def main():
-    parser = argparse.ArgumentParser()
-    ## Required parameters
-    parser.add_argument("--model_type", default = 'albert', type = str,
-                        help = "Model type selected in the list: ")
-    parser.add_argument("--model_name_or_path", default = 'pretrained_models/albert_large/', type = str,
-                        help = "Path to pre-trained model or shortcut name selected in the list: ")
-    parser.add_argument("--output_dir", default = "saved_models/", type = str,
-                        help = "The output directory where the model predictions and checkpoints will be written.")
-    ## Other parameters
-    parser.add_argument("--config_name", default = "", type = str,
-                        help = "Pretrained config name or path if not the same as model_name")
-    parser.add_argument("--tokenizer_name", default = "", type = str,
-                        help = "Pretrained tokenizer name or path if not the same as model_name")
-    parser.add_argument("--cache_dir", default = "", type = str,
-                        help = "Where do you want to store the pre-trained models downloaded from s3")
-    parser.add_argument("--do_train", default = False, action = 'store_true',
-                        help = "Whether to run training.")
-    parser.add_argument("--do_predict", default = False, action = 'store_true',
-                        help = "Whether to run prediction.")
-    parser.add_argument("--evaluate_during_training", action = 'store_true',
-                        help = "Rul evaluation during training at each logging step.")
-    parser.add_argument("--do_lower_case", action = 'store_true',
-                        help = "Set this flag if you are using an uncased model.")
-
-    parser.add_argument("--per_gpu_train_batch_size", default = 32, type = int,
-                        help = "Batch size per GPU/CPU for training.")
-    parser.add_argument("--per_gpu_eval_batch_size", default = 32, type = int,
-                        help = "Batch size per GPU/CPU for evaluation.")
-    parser.add_argument('--gradient_accumulation_steps', type = int, default = 1,
-                        help = "Number of updates steps to accumulate before performing a backward/update pass.")
-    parser.add_argument("--learning_rate", default = 3e-5, type = float,
-                        help = "The initial learning rate for Adam.")
-    parser.add_argument("--weight_decay", default = 0.1, type = float,
-                        help = "Weight decay if we apply some.")
-    parser.add_argument("--adam_epsilon", default = 1e-8, type = float,
-                        help = "Epsilon for Adam optimizer.")
-    parser.add_argument("--max_grad_norm", default=5.0, type=float,
-                        help = "Max gradient norm.")
-    parser.add_argument("--num_train_epochs", default = 3.0, type = float,
-                        help = "Total number of training epochs to perform.")
-    parser.add_argument("--max_steps", default = -1, type = int,
-                        help = "If > 0: set total number of training steps to perform. Override num_train_epochs.")
-    parser.add_argument("--warmup_steps", default = 0, type = int,
-                        help = "Linear warmup over warmup_steps.")
-
-    parser.add_argument('--logging_steps', type = int, default = 50,
-                        help = "Log every X updates steps.")
-    parser.add_argument('--save_steps', type = int, default = 50,
-                        help = "Save checkpoint every X updates steps.")
-    parser.add_argument("--eval_all_checkpoints", action = 'store_true',
-                        help = "Evaluate all checkpoints starting with the same prefix as model_name ending and ending with step number")
-    parser.add_argument("--no_cuda", action = 'store_true',
-                        help = "Avoid using CUDA when available")
-    parser.add_argument('--overwrite_output_dir', default = True, action = 'store_true',
-                        help = "Overwrite the content of the output directory")
-    parser.add_argument('--overwrite_cache', action = 'store_true',
-                        help = "Overwrite the cached training and evaluation sets")
-    parser.add_argument('--seed', type = int, default = 42,
-                        help = "random seed for initialization")
-
-    parser.add_argument('--fp16', action = 'store_true',
-                        help = "Whether to use 16-bit (mixed) precision (through NVIDIA apex) instead of 32-bit")
-    parser.add_argument('--fp16_opt_level', type = str, default = 'O1',
-                        help = "For fp16: Apex AMP optimization level selected in ['O0', 'O1', 'O2', and 'O3']."
-                             "See details at https://nvidia.github.io/apex/amp.html")
-
-    parser.add_argument("--local_rank", type = int, default = -1,
-                        help = "For distributed training: local_rank")  # DST params
-    parser.add_argument("--data_root", default = 'data/mwz2.2/', type = str)
-    parser.add_argument("--train_data", default = 'test_dials.json', type = str)
-    parser.add_argument("--dev_data", default = 'test_dials.json', type = str)
-    parser.add_argument("--test_data", default = 'test_dials.json', type = str)
-    parser.add_argument("--ontology_data", default = 'schema.json', type = str)
-    parser.add_argument("--vocab_path", default = 'assets/vocab.txt', type = str)
-    parser.add_argument("--save_dir", default = 'saved_models', type = str)
-    parser.add_argument("--load_model", default = False, action = 'store_true')
-    parser.add_argument("--load_ckpt_epoch", default='checkpoint_epoch_9.bin', type=str)
-    parser.add_argument("--load_test_op_data_path", default='cls_score_test_state_update_predictor_output.json', type=str)
-    parser.add_argument("--random_seed", default = 42, type = int)
-    parser.add_argument("--num_workers", default = 4, type = int)
-    parser.add_argument("--batch_size", default = 1, type = int)
-    parser.add_argument("--enc_warmup", default = 0.01, type = float)
-    parser.add_argument("--dec_warmup", default = 0.01, type = float)
-    parser.add_argument("--enc_lr", default = 5e-6, type = float)
-    parser.add_argument("--base_lr", default = 1e-4, type = float)
-    parser.add_argument("--n_epochs", default = 10, type = int)
-    parser.add_argument("--eval_epoch", default = 1, type = int)
-    parser.add_argument("--eval_step", default=5, type=int)
-    parser.add_argument("--turn", default = 2, type = int)
-    parser.add_argument("--op_code", default = "2", type = str)
-    parser.add_argument("--slot_token", default = "[SLOT]", type = str)
-    parser.add_argument("--dropout", default = 0.0, type = float)
-    parser.add_argument("--hidden_dropout_prob", default = 0.0, type = float)
-    parser.add_argument("--attention_probs_dropout_prob", default = 0.1, type = float)
-    parser.add_argument("--decoder_teacher_forcing", default = 0.5, type = float)
-    parser.add_argument("--word_dropout", default = 0.1, type = float)
-    parser.add_argument("--not_shuffle_state", default = True, action = 'store_true')
-
-    parser.add_argument("--n_history", default = 1, type = int)
-    parser.add_argument("--max_seq_length", default = 256, type = int)
-    parser.add_argument("--sketch_weight", default = 0.55, type = float)
-    parser.add_argument("--answer_weight", default = 0.6, type = float)
-    parser.add_argument("--generation_weight", default = 0.2, type = float)
-    parser.add_argument("--extraction_weight", default = 0.1, type = float)
-    parser.add_argument("--msg", default = None, type = str)
-    args = parser.parse_args()
-
-    if os.path.exists(args.output_dir) and os.listdir(
-            args.output_dir) and args.do_train and not args.overwrite_output_dir:
-        raise ValueError(
-            "Output directory ({}) already exists and is not empty. Use --overwrite_output_dir to overcome.".format(
-                args.output_dir))
-
-    # Setup CUDA, GPU & distributed training
-    if args.local_rank == -1 or args.no_cuda:
-        device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
-        args.n_gpu = torch.cuda.device_count()
-    else:  # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
-        torch.cuda.set_device(args.local_rank)
-        device = torch.device("cuda", args.local_rank)
-        torch.distributed.init_process_group(backend = 'nccl')
-        args.n_gpu = 1
-    args.device = device
-    print("Device:", args.device)
-
-    # Setup logging
-    logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
-                        datefmt = '%m/%d/%Y %H:%M:%S',
-                        level = logging.INFO if args.local_rank in [-1, 0] else logging.WARN)
-    logger.warning("Process rank: %s, device: %s, n_gpu: %s, distributed training: %s, 16-bits training: %s",
-                   args.local_rank, device, args.n_gpu, bool(args.local_rank != -1), args.fp16)
+def main(args, trial):
+    global trial_no
 
     # Set seed
     set_seed(args)
@@ -535,7 +411,7 @@ def main():
             enc_scheduler = get_linear_schedule_with_warmup(enc_optimizer, num_warmup_steps=int(num_train_steps * args.enc_warmup), num_training_steps=num_train_steps) # 线性warmup
             
             best_score = {'epoch': 0, 'overall_jga': 0, 'cate_jga': 0, 'noncate_jga': 0}
-            file_logger = helper.FileLogger(args.save_dir + '/log.txt',
+            file_logger = helper.FileLogger(args.save_dir + f"/trial_{trial_no}"+'/log.txt',
                                             header="# epoch\tstep\ttrain_loss\tbest_jointacc\tbest_catejointacc\tbest_noncatejointacc\tnow_jointacc\tnow_catejointacc\tnow_noncatejointacc")
             model.train()
             loss = 0
@@ -549,7 +425,7 @@ def main():
                     if input_ids.numel() == 0 or sample_mm.numel() == 0:
                         continue
 
-                    assert len(input_ids) <= TURN_SPLIT  # train在之前已经切分了，这里不应该有任何false的情况
+                    assert len(input_ids) <= TURN_SPLIT  
                     sample_mask = (pred_ops.argmax(dim=-1) == 0) if turn == 1 else (op_ids == 0)
                     start_logits, end_logits, gen_scores, _, _, _, fuse_score, input_ids,  = model(input_ids = input_ids,
                                                                                     token_type_ids = segment_ids,
@@ -615,7 +491,7 @@ def main():
                         best_score['cate_jga'] = catejoint_acc
                         best_score['noncate_jga'] = noncatejoint_acc
                         saved_name = 'model_best_turn' + str(turn) + '.bin'
-                        save_path = os.path.join(args.save_dir, saved_name)
+                        save_path = os.path.join(args.save_dir, f"trial_{trial_no}", saved_name)
                         model_to_save = model.module if hasattr(model, 'module') else model
                         params = {
                             'model': model_to_save.state_dict(),
@@ -632,20 +508,29 @@ def main():
                     print("Best: Epoch_{}\tJointAcc: {:.4f}\tCategorical-JointAcc: {:.4f}\tnon-Categorical-JointAcc: {:.4f}".format(best_score['epoch'], best_score['overall_jga'], best_score['cate_jga'], best_score['noncate_jga']))
                     logger_trainInfo.warning("Best: Epoch_{}\tJointAcc: {:.4f}\tCategorical-JointAcc: {:.4f}\tnon-Categorical-JointAcc: {:.4f}".format(best_score['epoch'], best_score['overall_jga'], best_score['cate_jga'], best_score['noncate_jga']))
                     del loss
+
+                    trial.report(joint_acc, epoch)
+
+                    if trial.should_prune():
+                        raise optuna.exceptions.TrialPruned()
                 
                 # 每个epoch保存模型
                 model_to_save = model.module if hasattr(model, 'module') else model
-                save_path = os.path.join(args.save_dir, 'checkpoint_epoch_' + str(epoch) + '.bin')
+                save_path = os.path.join(args.save_dir, f"trial_{trial_no}", 'checkpoint_epoch_' + str(epoch) + '.bin')
                 torch.save(model_to_save.state_dict(), save_path)
+
+            return best_score
 
         elif args.do_predict == True:
             logger.info("Do predict entered")
             predict(dev_dataloader, model, device, ans_vocab_nd, cate_mask, turn=2, tokenizer=tokenizer, ontology=ontology)
+            return None
         else:
             logger.info("Do train flase entered")
             joint_acc, catejoint_acc, noncatejoint_acc = evaluate(dev_dataloader, model, device, ans_vocab_nd, cate_mask, turn=2, tokenizer=tokenizer, ontology=ontology)
             print("Test Result:\tJointAcc: {:.4f}\tCategorical-JointAcc: {:.4f}\tnon-Categorical-JointAcc: {:.4f}".format(joint_acc, catejoint_acc, noncatejoint_acc))
             logger_trainInfo.warning("Test Result:\tJointAcc: {:.4f}\tCategorical-JointAcc: {:.4f}\tnon-Categorical-JointAcc: {:.4f}".format(joint_acc, catejoint_acc, noncatejoint_acc))
+            return None
 
 def predict(dev_dataloader, model, device, ans_vocab_nd, cate_mask,turn =2, tokenizer = None, ontology = None):
     model.eval()
@@ -680,44 +565,45 @@ def predict(dev_dataloader, model, device, ans_vocab_nd, cate_mask,turn =2, toke
     gold_ans_labels = []
 
     logger.info("Predict entered")
-    print("\n\ndev_dataloader", str(dev_dataloader))
-    with torch.no_grad():
-        for step, batch in enumerate(tqdm(dev_dataloader)):
-            print("\nstep: ", str(step))
-            print("\nbatchsize: ", str(len(batch)))
-            # print("\nbatch: ", str(batch))
-            batch = [b.to(device) if not isinstance(b, int) and not isinstance(b, list) else b for b in
-                    batch]
-            input_ids, input_mask, slot_mask, segment_ids, state_position_ids, op_ids, pred_ops, domain_ids, gen_ids, start_position, end_position, max_value, max_update, slot_ans_ids, start_idx, end_idx, position_ids, sample_mm, generate_turn, generate_mask,ref_slot,gold_ans_label,sid, update_current_mm, slot_all_connect, update_mm, slot_domain_connect = batch
-            if input_ids.numel() == 0 or sample_mm.numel() == 0:
-                continue
+    for step, batch in enumerate(tqdm(dev_dataloader)):
+        print("\nstep: ", str(step))
+        print("\nbatchsize: ", str(len(batch)))
+        # print("\nbatch: ", str(batch))
+        batch = [b.to(device) if not isinstance(b, int) and not isinstance(b, list) else b for b in
+                 batch]
+        input_ids, input_mask, slot_mask, segment_ids, state_position_ids, op_ids, pred_ops, domain_ids, gen_ids, start_position, end_position, max_value, max_update, slot_ans_ids, start_idx, end_idx, position_ids, sample_mm, generate_turn, generate_mask,ref_slot,gold_ans_label,sid, update_current_mm, slot_all_connect, update_mm, slot_domain_connect = batch
+        if input_ids.numel() == 0 or sample_mm.numel() == 0:
+            continue
 
-            if turn == 2:
-                print("entered first turn 2")
-                logger.info("entered first turn 2")
-                # has_ans_predictions += pred_ops.argmax(dim=-1).cpu().detach().numpy().tolist()
-                # start_ids += start_idx.cpu().detach().numpy().tolist()
-                # end_ids += end_idx.cpu().detach().numpy().tolist()
-                # has_ans_labels += op_ids.cpu().detach().numpy().tolist()
-                # gen_labels += slot_ans_ids.cpu().detach().numpy().tolist()
-                # gen_id_labels += gen_ids
-                # gold_ans_labels += gold_ans_label
-                sample_ids += sid
+        if turn == 2:
+            print("entered first turn 2")
+            logger.info("entered first turn 2")
+            # has_ans_predictions += pred_ops.argmax(dim=-1).cpu().detach().numpy().tolist()
+            # start_ids += start_idx.cpu().detach().numpy().tolist()
+            # end_ids += end_idx.cpu().detach().numpy().tolist()
+            # has_ans_labels += op_ids.cpu().detach().numpy().tolist()
+            # gen_labels += slot_ans_ids.cpu().detach().numpy().tolist()
+            # gen_id_labels += gen_ids
+            # gold_ans_labels += gold_ans_label
+            sample_ids += sid
 
+            # assert len(input_ids) <= TEST_TURN_SPLIT  # test的之前没切分，在这里应该有False的情况出现
+            # 测试样本在这里切分
+            if len(input_ids) <= TEST_TURN_SPLIT:
                 start_logits, end_logits, gen_scores, _, _, _, fuse_score, input_ids, = model(input_ids=input_ids,
-                                                                                                token_type_ids=segment_ids,
-                                                                                                state_positions=state_position_ids,
-                                                                                                attention_mask=input_mask,
-                                                                                                slot_mask=slot_mask,
-                                                                                                first_edge_mask=update_current_mm,
-                                                                                                second_edge_mask=slot_all_connect,
-                                                                                                third_edge_mask=update_mm,
-                                                                                                fourth_edge_mask=slot_domain_connect,
-                                                                                                max_value=max_value,
-                                                                                                op_ids=op_ids,
-                                                                                                max_update=max_update,
-                                                                                                position_ids=position_ids,
-                                                                                                sample_mm=sample_mm)
+                                                                                              token_type_ids=segment_ids,
+                                                                                              state_positions=state_position_ids,
+                                                                                              attention_mask=input_mask,
+                                                                                              slot_mask=slot_mask,
+                                                                                              first_edge_mask=update_current_mm,
+                                                                                              second_edge_mask=slot_all_connect,
+                                                                                              third_edge_mask=update_mm,
+                                                                                              fourth_edge_mask=slot_domain_connect,
+                                                                                              max_value=max_value,
+                                                                                              op_ids=op_ids,
+                                                                                              max_update=max_update,
+                                                                                              position_ids=position_ids,
+                                                                                              sample_mm=sample_mm)
                 start_predictions += start_logits.argmax(dim=-1).cpu().detach().numpy().tolist()
                 end_predictions += end_logits.argmax(dim=-1).cpu().detach().numpy().tolist()
                 gen_predictions += gen_scores.argmax(dim=-1).cpu().detach().numpy().tolist()
@@ -727,93 +613,67 @@ def predict(dev_dataloader, model, device, ans_vocab_nd, cate_mask,turn =2, toke
                 del start_logits, end_logits, gen_scores, _, fuse_score, input_ids,
                 torch.cuda.empty_cache()
 
-                # assert len(input_ids) <= TEST_TURN_SPLIT  # test的之前没切分，在这里应该有False的情况出现
-                # 测试样本在这里切分
-                # if len(input_ids) <= TEST_TURN_SPLIT:
-                #     start_logits, end_logits, gen_scores, _, _, _, fuse_score, input_ids, = model(input_ids=input_ids,
-                #                                                                                 token_type_ids=segment_ids,
-                #                                                                                 state_positions=state_position_ids,
-                #                                                                                 attention_mask=input_mask,
-                #                                                                                 slot_mask=slot_mask,
-                #                                                                                 first_edge_mask=update_current_mm,
-                #                                                                                 second_edge_mask=slot_all_connect,
-                #                                                                                 third_edge_mask=update_mm,
-                #                                                                                 fourth_edge_mask=slot_domain_connect,
-                #                                                                                 max_value=max_value,
-                #                                                                                 op_ids=op_ids,
-                #                                                                                 max_update=max_update,
-                #                                                                                 position_ids=position_ids,
-                #                                                                                 sample_mm=sample_mm)
-                #     start_predictions += start_logits.argmax(dim=-1).cpu().detach().numpy().tolist()
-                #     end_predictions += end_logits.argmax(dim=-1).cpu().detach().numpy().tolist()
-                #     gen_predictions += gen_scores.argmax(dim=-1).cpu().detach().numpy().tolist()
-                #     fuse_scores += fuse_score.argmax(dim=-1).cpu().detach().numpy().tolist()
-                #     all_input_ids += input_ids[:, :, 1:].cpu().detach().numpy().tolist()
-
-                #     del start_logits, end_logits, gen_scores, _, fuse_score, input_ids,
-                #     torch.cuda.empty_cache()
-
-                # else:
-                #     tmp_input_ids = [input_ids[:TEST_TURN_SPLIT, :], input_ids[TEST_TURN_SPLIT:, :]]
-                #     tmp_segment_ids = [segment_ids[:TEST_TURN_SPLIT, :], segment_ids[TEST_TURN_SPLIT:, :]]
-                #     tmp_state_position_ids = [state_position_ids[:TEST_TURN_SPLIT, :], state_position_ids[TEST_TURN_SPLIT:, :]]
-                #     tmp_input_mask = [input_mask[:TEST_TURN_SPLIT, :], input_mask[TEST_TURN_SPLIT:, :]]
-                #     tmp_slot_mask = [slot_mask[:TEST_TURN_SPLIT, :], slot_mask[TEST_TURN_SPLIT:, :]]
-                #     tmp_update_current_mm = [update_current_mm[:TEST_TURN_SPLIT, :, :TEST_TURN_SPLIT], update_current_mm[TEST_TURN_SPLIT:, :, TEST_TURN_SPLIT:]]
-                #     tmp_slot_all_connect = [slot_all_connect[:TEST_TURN_SPLIT, :, :], slot_all_connect[TEST_TURN_SPLIT:, :, :]]
-                #     tmp_update_mm = [update_mm[:TEST_TURN_SPLIT, :, :TEST_TURN_SPLIT], update_mm[TEST_TURN_SPLIT:, :, TEST_TURN_SPLIT:]]
-                #     tmp_slot_domain_connect = [slot_domain_connect[:TEST_TURN_SPLIT, :, :], slot_domain_connect[TEST_TURN_SPLIT:, :, :]]
-                #     tmp_max_value = [max_value, max_value]
-                #     tmp_op_ids = [op_ids[:TEST_TURN_SPLIT, :], op_ids[TEST_TURN_SPLIT:, :]]
-                #     tmp_max_update = [max_update, max_update]
-                #     tmp_position_ids = [position_ids[:TEST_TURN_SPLIT, :], position_ids[TEST_TURN_SPLIT:, :]]
-                #     tmp_sample_mm = [sample_mm[:TEST_TURN_SPLIT, :, :], sample_mm[TEST_TURN_SPLIT:, :, :]]
-
-                #     for cnt in range(2):
-                #         start_logits, end_logits, gen_scores, _, _, _, fuse_score, input_ids, = model(
-                #             input_ids=tmp_input_ids[cnt],
-                #             token_type_ids=tmp_segment_ids[cnt],
-                #             state_positions=tmp_state_position_ids[cnt],
-                #             attention_mask=tmp_input_mask[cnt],
-                #             slot_mask=tmp_slot_mask[cnt],
-                #             first_edge_mask=tmp_update_current_mm[cnt],
-                #             second_edge_mask=tmp_slot_all_connect[cnt],
-                #             third_edge_mask=tmp_update_mm[cnt],
-                #             fourth_edge_mask=tmp_slot_domain_connect[cnt],
-                #             max_value=tmp_max_value[cnt],
-                #             op_ids=tmp_op_ids[cnt],
-                #             max_update=tmp_max_update[cnt],
-                #             position_ids=tmp_position_ids[cnt],
-                #             sample_mm=tmp_sample_mm[cnt])
-                #         start_predictions += start_logits.argmax(dim=-1).cpu().detach().numpy().tolist()
-                #         end_predictions += end_logits.argmax(dim=-1).cpu().detach().numpy().tolist()
-                #         gen_predictions += gen_scores.argmax(dim=-1).cpu().detach().numpy().tolist()
-                #         fuse_scores += fuse_score.argmax(dim=-1).cpu().detach().numpy().tolist()
-                #         all_input_ids += input_ids[:, :, 1:].cpu().detach().numpy().tolist()
-
-                #         del start_logits, end_logits, gen_scores, _, fuse_score, input_ids,
-                #         torch.cuda.empty_cache()
-
-        current_state = [[] for k in range(len(all_input_ids))]
-        # current_state = [[] for k in domain_joint.keys()]
-        print("\n\nlen all_input_ids:", str(len(all_input_ids)))
-        for i in range(len(all_input_ids)):
-            print("\n\nlen start_predictions:", str(len(start_predictions)))
-            for si in range(len(start_predictions)):
-                print("\n\nstart_predictions[i][si]:", str(start_predictions[i][si]))
-                print("\n\nend_predictions[i][si]:",str(end_predictions[i][si]))
-                print("\n\nall_input_ids[i][si]", str("".join(tokenizer.convert_ids_to_tokens(all_input_ids[i][si]))))
-                current_state[si] = all_input_ids[i][si][start_predictions[i][si] - 1:end_predictions[i][si]] + [30002]
-                print("\n\ncurrent_state str: ",str(current_state) )
-                print("\ncurrent_state in all_input_ids loop: ", str("".join(tokenizer.convert_ids_to_tokens(current_state[si]))))
-
-        for slot_id in range(len(current_state)):
-            if current_state[slot_id] == 3 or (30004 in current_state[slot_id]):
-                current_state[slot_id] = []
-                print("\nimproper current_state: ", str("".join(tokenizer.convert_ids_to_tokens(current_state[slot_id]))))
             else:
-                print("\ncurrent_state in slot_id_loop: ", str("".join(tokenizer.convert_ids_to_tokens(current_state[slot_id]))))
-                
+                tmp_input_ids = [input_ids[:TEST_TURN_SPLIT, :], input_ids[TEST_TURN_SPLIT:, :]]
+                tmp_segment_ids = [segment_ids[:TEST_TURN_SPLIT, :], segment_ids[TEST_TURN_SPLIT:, :]]
+                tmp_state_position_ids = [state_position_ids[:TEST_TURN_SPLIT, :], state_position_ids[TEST_TURN_SPLIT:, :]]
+                tmp_input_mask = [input_mask[:TEST_TURN_SPLIT, :], input_mask[TEST_TURN_SPLIT:, :]]
+                tmp_slot_mask = [slot_mask[:TEST_TURN_SPLIT, :], slot_mask[TEST_TURN_SPLIT:, :]]
+                tmp_update_current_mm = [update_current_mm[:TEST_TURN_SPLIT, :, :TEST_TURN_SPLIT], update_current_mm[TEST_TURN_SPLIT:, :, TEST_TURN_SPLIT:]]
+                tmp_slot_all_connect = [slot_all_connect[:TEST_TURN_SPLIT, :, :], slot_all_connect[TEST_TURN_SPLIT:, :, :]]
+                tmp_update_mm = [update_mm[:TEST_TURN_SPLIT, :, :TEST_TURN_SPLIT], update_mm[TEST_TURN_SPLIT:, :, TEST_TURN_SPLIT:]]
+                tmp_slot_domain_connect = [slot_domain_connect[:TEST_TURN_SPLIT, :, :], slot_domain_connect[TEST_TURN_SPLIT:, :, :]]
+                tmp_max_value = [max_value, max_value]
+                tmp_op_ids = [op_ids[:TEST_TURN_SPLIT, :], op_ids[TEST_TURN_SPLIT:, :]]
+                tmp_max_update = [max_update, max_update]
+                tmp_position_ids = [position_ids[:TEST_TURN_SPLIT, :], position_ids[TEST_TURN_SPLIT:, :]]
+                tmp_sample_mm = [sample_mm[:TEST_TURN_SPLIT, :, :], sample_mm[TEST_TURN_SPLIT:, :, :]]
+
+                for cnt in range(2):
+                    start_logits, end_logits, gen_scores, _, _, _, fuse_score, input_ids, = model(
+                        input_ids=tmp_input_ids[cnt],
+                        token_type_ids=tmp_segment_ids[cnt],
+                        state_positions=tmp_state_position_ids[cnt],
+                        attention_mask=tmp_input_mask[cnt],
+                        slot_mask=tmp_slot_mask[cnt],
+                        first_edge_mask=tmp_update_current_mm[cnt],
+                        second_edge_mask=tmp_slot_all_connect[cnt],
+                        third_edge_mask=tmp_update_mm[cnt],
+                        fourth_edge_mask=tmp_slot_domain_connect[cnt],
+                        max_value=tmp_max_value[cnt],
+                        op_ids=tmp_op_ids[cnt],
+                        max_update=tmp_max_update[cnt],
+                        position_ids=tmp_position_ids[cnt],
+                        sample_mm=tmp_sample_mm[cnt])
+                    start_predictions += start_logits.argmax(dim=-1).cpu().detach().numpy().tolist()
+                    end_predictions += end_logits.argmax(dim=-1).cpu().detach().numpy().tolist()
+                    gen_predictions += gen_scores.argmax(dim=-1).cpu().detach().numpy().tolist()
+                    fuse_scores += fuse_score.argmax(dim=-1).cpu().detach().numpy().tolist()
+                    all_input_ids += input_ids[:, :, 1:].cpu().detach().numpy().tolist()
+
+                    del start_logits, end_logits, gen_scores, _, fuse_score, input_ids,
+                    torch.cuda.empty_cache()
+
+            current_state = [[] for k in range(len(all_input_ids))]
+            # current_state = [[] for k in domain_joint.keys()]
+            print("\n\nlen all_input_ids:", str(len(all_input_ids)))
+            for i in range(len(all_input_ids)):
+                print("\n\nlen start_predictions:", str(len(start_predictions)))
+                for si in range(len(start_predictions)):
+                    print("\n\nstart_predictions[i][si]:", str(start_predictions[i][si]))
+                    print("\n\nend_predictions[i][si]:",str(end_predictions[i][si]))
+                    print("\n\nall_input_ids[i][si]", str("".join(tokenizer.convert_ids_to_tokens(all_input_ids[i][si]))))
+                    print("\n\nall_input_ids[i][si][0:1]", str(all_input_ids[i][si][start_predictions[i][si] - 1:end_predictions[i][si]]))
+                    current_state[si] = all_input_ids[i][si][start_predictions[i][si] - 1:end_predictions[i][si]] + [30002]
+                    print("\n\ncurrent_state: ",str(current_state) )
+                    print("\ncurrent_state: ", str("".join(tokenizer.convert_ids_to_tokens(current_state[si]))))
+
+            for slot_id in range(len(current_state)):
+                if current_state[slot_id] == 3 or (30004 in current_state[slot_id]):
+                    current_state[slot_id] = []
+                else:
+                    print("\ncurrent_state: ", str("".join(tokenizer.convert_ids_to_tokens(current_state[slot_id]))))
+            
 
 def evaluate(dev_dataloader, model, device, ans_vocab_nd, cate_mask,turn =2, tokenizer = None, ontology = None):
     model.eval()
@@ -848,31 +708,6 @@ def evaluate(dev_dataloader, model, device, ans_vocab_nd, cate_mask,turn =2, tok
     gold_ans_labels = []
 
     logger.info("Evaluate entered")
-    with open("evaluation_results.tsv", "w") as outfile:
-        field_names = [
-            "input_ids",
-            "slot_id",
-            "gold_state",
-            "current_state",
-            "slot_matched",
-            "slot_id",
-            "gold_state",
-            "current_state",
-            "slot_matched",
-            "slot_id",
-            "gold_state",
-            "current_state",
-            "slot_matched",
-            "slot_id",
-            "gold_state",
-            "current_state",
-            "slot_matched",
-            "slot_id",
-            "gold_state",
-            "current_state",
-            "slot_matched"
-        ]
-        outfile.write("\t".join(field_names) + "\n")
     for step, batch in enumerate(tqdm(dev_dataloader)):
         print("\nstep: ", str(step))
         print("\nbatchsize: ", str(len(batch)))
@@ -1034,6 +869,231 @@ def evaluate(dev_dataloader, model, device, ans_vocab_nd, cate_mask,turn =2, tok
     print("\nsamples:",str(samples))
     return joint_correct/samples, catecorrect/samples, noncatecorrect/samples
 
+def objective(trial, args):
+    global trial_no
+    global report_path
+
+    # Setup CUDA, GPU & distributed training
+    if args.local_rank == -1 or args.no_cuda:
+        device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+        args.n_gpu = torch.cuda.device_count()
+    else:  # Initializes the distributed backend which will take care of sychronizing nodes/GPUs
+        torch.cuda.set_device(args.local_rank)
+        device = torch.device("cuda", args.local_rank)
+        torch.distributed.init_process_group(backend = 'nccl')
+        args.n_gpu = 1
+    args.device = device
+    print("Device:", args.device)
+
+    # Setup logging
+    logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
+                        datefmt = '%m/%d/%Y %H:%M:%S',
+                        level = logging.INFO if args.local_rank in [-1, 0] else logging.WARN)
+    logger.warning("Process rank: %s, device: %s, n_gpu: %s, distributed training: %s, 16-bits training: %s",
+                   args.local_rank, device, args.n_gpu, bool(args.local_rank != -1), args.fp16)
+    
+    report_path = os.path.join(args.output_dir, "optuna_prune_report.tsv")
+
+    n_epochs = trial.suggest_int("n_epochs", 1, 20)
+    batch_size_options = [16, 32, 64]
+    batch_size = trial.suggest_categorixal("batch_size", batch_size_options)
+    learning_rate = trial.suggest_float("learning_rate", 0.00001, 0.0001, log=True)
+    enc_lr = trial.suggest_float("enc_lr", 0.00001, 0.0001, log=True)
+    enc_warmup = trial.suggest_float("enc_warmup", 0.001, 0.01, log=True)
+    word_dropout = trial.suggest_float("word_dropout", 0.1, 0.2, step=0.1)
+
+    args.n_epochs = n_epochs
+    args.batch_size = batch_size
+    args.base_lr = learning_rate
+    args.enc_lr = enc_lr
+    args.enc_warmup = enc_warmup
+    args.word_dropout = word_dropout
+
+    dir_name = os.path.join(args.ouput_dir, f"trial_{trial_no}")
+    if not os.path.isdir(dir_name):
+        os.mkdir(dir_name)
+
+    best_model_results = main(args, trial)
+    print("best_model_results = ", str(best_model_results))
+
+    print("Best: Epoch_{}\tJointAcc: {:.4f}\tCategorical-JointAcc: {:.4f}\tnon-Categorical-JointAcc: {:.4f}".format(best_model_results['epoch'], best_model_results['overall_jga'], best_model_results['cate_jga'], best_model_results['noncate_jga']))
+
+    target_measure = best_model_results['overall_jga']
+
+    with open(report_path, "w" if trial_no == 0 else "a") as outfile:
+        field_names = [
+            "trial_no",
+            "best_epoch",
+            "overall_jga",
+            "cate_jga",
+            "noncate_jga",
+            "n_epochs",
+            "batch_size",
+            "learing_rate",
+            "enc_warmup",
+            "enc_lr",
+            "word_dropout"
+        ]
+        field_values = [
+            trial_no,
+            best_model_results["epoch"],
+            best_model_results["overall_jga"],
+            best_model_results["cate_jga"],
+            best_model_results["noncate_jga"],
+            n_epochs,
+            batch_size,
+            learning_rate,
+            enc_warmup,
+            enc_lr,
+            word_dropout
+        ]
+
+        if trial_no == 0:
+            outfile.write("\t".join(field_names) + "\n")
+        outfile.write("\t".join([f"{_}" for _ in field_values]))
+        outfile.write("\n")
+
+    trial_no += 1
+    return target_measure
 
 if __name__ ==  "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    ## Required parameters
+    parser.add_argument("--model_type", default = 'albert', type = str,
+                        help = "Model type selected in the list: ")
+    parser.add_argument("--model_name_or_path", default = 'pretrained_models/albert_large/', type = str,
+                        help = "Path to pre-trained model or shortcut name selected in the list: ")
+    parser.add_argument("--output_dir", default = "saved_models/", type = str,
+                        help = "The output directory where the model predictions and checkpoints will be written.")
+    ## Other parameters
+    parser.add_argument("--config_name", default = "", type = str,
+                        help = "Pretrained config name or path if not the same as model_name")
+    parser.add_argument("--tokenizer_name", default = "", type = str,
+                        help = "Pretrained tokenizer name or path if not the same as model_name")
+    parser.add_argument("--cache_dir", default = "", type = str,
+                        help = "Where do you want to store the pre-trained models downloaded from s3")
+    parser.add_argument("--do_train", default = False, action = 'store_true',
+                        help = "Whether to run training.")
+    parser.add_argument("--do_predict", default = False, action = 'store_true',
+                        help = "Whether to run prediction.")
+    parser.add_argument("--evaluate_during_training", action = 'store_true',
+                        help = "Rul evaluation during training at each logging step.")
+    parser.add_argument("--do_lower_case", action = 'store_true',
+                        help = "Set this flag if you are using an uncased model.")
+
+    parser.add_argument("--per_gpu_train_batch_size", default = 32, type = int,
+                        help = "Batch size per GPU/CPU for training.")
+    parser.add_argument("--per_gpu_eval_batch_size", default = 32, type = int,
+                        help = "Batch size per GPU/CPU for evaluation.")
+    parser.add_argument('--gradient_accumulation_steps', type = int, default = 1,
+                        help = "Number of updates steps to accumulate before performing a backward/update pass.")
+    parser.add_argument("--learning_rate", default = 3e-5, type = float,
+                        help = "The initial learning rate for Adam.")
+    parser.add_argument("--weight_decay", default = 0.1, type = float,
+                        help = "Weight decay if we apply some.")
+    parser.add_argument("--adam_epsilon", default = 1e-8, type = float,
+                        help = "Epsilon for Adam optimizer.")
+    parser.add_argument("--max_grad_norm", default=5.0, type=float,
+                        help = "Max gradient norm.")
+    parser.add_argument("--num_train_epochs", default = 3.0, type = float,
+                        help = "Total number of training epochs to perform.")
+    parser.add_argument("--max_steps", default = -1, type = int,
+                        help = "If > 0: set total number of training steps to perform. Override num_train_epochs.")
+    parser.add_argument("--warmup_steps", default = 0, type = int,
+                        help = "Linear warmup over warmup_steps.")
+
+    parser.add_argument('--logging_steps', type = int, default = 50,
+                        help = "Log every X updates steps.")
+    parser.add_argument('--save_steps', type = int, default = 50,
+                        help = "Save checkpoint every X updates steps.")
+    parser.add_argument("--eval_all_checkpoints", action = 'store_true',
+                        help = "Evaluate all checkpoints starting with the same prefix as model_name ending and ending with step number")
+    parser.add_argument("--no_cuda", action = 'store_true',
+                        help = "Avoid using CUDA when available")
+    parser.add_argument('--overwrite_output_dir', default = True, action = 'store_true',
+                        help = "Overwrite the content of the output directory")
+    parser.add_argument('--overwrite_cache', action = 'store_true',
+                        help = "Overwrite the cached training and evaluation sets")
+    parser.add_argument('--seed', type = int, default = 42,
+                        help = "random seed for initialization")
+
+    parser.add_argument('--fp16', action = 'store_true',
+                        help = "Whether to use 16-bit (mixed) precision (through NVIDIA apex) instead of 32-bit")
+    parser.add_argument('--fp16_opt_level', type = str, default = 'O1',
+                        help = "For fp16: Apex AMP optimization level selected in ['O0', 'O1', 'O2', and 'O3']."
+                             "See details at https://nvidia.github.io/apex/amp.html")
+
+    parser.add_argument("--local_rank", type = int, default = -1,
+                        help = "For distributed training: local_rank")  # DST params
+    parser.add_argument("--data_root", default = 'data/mwz2.2/', type = str)
+    parser.add_argument("--train_data", default = 'test_dials.json', type = str)
+    parser.add_argument("--dev_data", default = 'test_dials.json', type = str)
+    parser.add_argument("--test_data", default = 'test_dials.json', type = str)
+    parser.add_argument("--ontology_data", default = 'schema.json', type = str)
+    parser.add_argument("--vocab_path", default = 'assets/vocab.txt', type = str)
+    parser.add_argument("--save_dir", default = 'saved_models', type = str)
+    parser.add_argument("--load_model", default = False, action = 'store_true')
+    parser.add_argument("--load_ckpt_epoch", default='checkpoint_epoch_9.bin', type=str)
+    parser.add_argument("--load_test_op_data_path", default='cls_score_test_state_update_predictor_output.json', type=str)
+    parser.add_argument("--random_seed", default = 42, type = int)
+    parser.add_argument("--num_workers", default = 4, type = int)
+    parser.add_argument("--batch_size", default = 1, type = int)
+    parser.add_argument("--enc_warmup", default = 0.01, type = float)
+    parser.add_argument("--dec_warmup", default = 0.01, type = float)
+    parser.add_argument("--enc_lr", default = 5e-6, type = float)
+    parser.add_argument("--base_lr", default = 1e-4, type = float)
+    parser.add_argument("--n_epochs", default = 10, type = int)
+    parser.add_argument("--eval_epoch", default = 1, type = int)
+    parser.add_argument("--eval_step", default=5, type=int)
+    parser.add_argument("--turn", default = 2, type = int)
+    parser.add_argument("--op_code", default = "2", type = str)
+    parser.add_argument("--slot_token", default = "[SLOT]", type = str)
+    parser.add_argument("--dropout", default = 0.0, type = float)
+    parser.add_argument("--hidden_dropout_prob", default = 0.0, type = float)
+    parser.add_argument("--attention_probs_dropout_prob", default = 0.1, type = float)
+    parser.add_argument("--decoder_teacher_forcing", default = 0.5, type = float)
+    parser.add_argument("--word_dropout", default = 0.1, type = float)
+    parser.add_argument("--not_shuffle_state", default = True, action = 'store_true')
+
+    parser.add_argument("--n_history", default = 1, type = int)
+    parser.add_argument("--max_seq_length", default = 256, type = int)
+    parser.add_argument("--sketch_weight", default = 0.55, type = float)
+    parser.add_argument("--answer_weight", default = 0.6, type = float)
+    parser.add_argument("--generation_weight", default = 0.2, type = float)
+    parser.add_argument("--extraction_weight", default = 0.1, type = float)
+    parser.add_argument("--msg", default = None, type = str)
+    args = parser.parse_args()
+
+    if os.path.exists(args.output_dir) and os.listdir(
+            args.output_dir) and args.do_train and not args.overwrite_output_dir:
+        raise ValueError(
+            "Output directory ({}) already exists and is not empty. Use --overwrite_output_dir to overcome.".format(
+                args.output_dir))
+
+    #wrap the objective inside a lambda and call objective inside it
+    func = lambda trial: objective(trial, args)
+
+    study = optuna.create_study(
+        direction="maximize", pruner=optuna.pruners.MedianPruner(n_startup_trials=2)
+    )
+    study.optimize(func, n_trials=50, timeout=None, n_jobs = 1)
+
+    pruned_trials = study.get_trials(deepcopy=False, states=[TrialState.PRUNED])
+    complete_trials = study.get_trials(deepcopy=False, states=[TrialState.COMPLETE])
+
+    print("Study statistics: ")
+    print(" Number of finished trials: ", len(study.trials))
+    print(" Number of pruned trials: ", len(pruned_trials))
+    print(" Number of complete trials: ", len(complete_trials))
+
+    print("Best trial: ")
+    trial = study.best_trial
+
+    print("Value: ", trial.value)
+
+    print(" Params: ")
+    for key, value in trial.params.items():
+        print(" {}: {}".format(key, value))
+    
+
+    # main()
